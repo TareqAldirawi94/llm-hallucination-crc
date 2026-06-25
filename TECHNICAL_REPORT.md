@@ -1,545 +1,299 @@
-# LLM Hallucination Detection with Mondrian Conformal Risk Control
+LLM Hallucination Detection with Mondrian Conformal Risk Control
 
-**Authors**: Tareq Aldirawi  
-**Date**: June 2026  
-**Project**: Conformal Risk Control for Domain-Aware Hallucination Detection  
+Author: Tareq Aldirawi
+Date: June 2026
+Project: Domain-aware conformal risk control for LLM hallucination detection
 
----
 
-## Abstract
+Abstract
 
-We present a framework for detecting LLM hallucinations with formal coverage guarantees using **Mondrian Conformal Risk Control (CRC)**. Traditional hallucination detectors output binary predictions without uncertainty quantification, leaving practitioners unable to assess reliability. We address this by applying CRC with Mondrian stratification to provide domain-specific guarantees: with 90% confidence, hallucinations are detected at ≥16% coverage per domain while maintaining ≤6% false alarm rates. Our approach uses TF-IDF embeddings (185K features) with logistic regression as the base detector, evaluated on HaluBench (14,900 samples across 6 domains). Comprehensive ablation studies demonstrate that (1) domain stratification is critical for fairness, (2) the miscoverage tolerance α=0.10 balances coverage and false alarms optimally, and (3) asymmetric loss weighting enables domain-specific calibration. This work demonstrates how conformal prediction brings formal statistical guarantees to practical hallucination detection systems.
+We study the use of Mondrian Conformal Risk Control (CRC) for detecting hallucinations
+in LLM outputs. CRC is a distribution-free framework that controls the expected risk of
+a set-valued predictor at a user-chosen level under exchangeability; the Mondrian variant
+enforces that control within each domain rather than only on average. We instantiate
+this on HaluBench (14,900 samples across six domains) with two base detectors — a
+TF-IDF + logistic-regression baseline and a BERT sentence-embedding model — and report
+what a valid per-domain risk-control procedure yields in each case.
 
----
+The central empirical finding is a recall / false-alarm tradeoff. Because the base
+detectors are close to chance on several domains, the conformal layer is valid but cannot
+manufacture discriminative power that the detector lacks: pushing hallucination recall up
+forces the false-alarm rate up with it. BERT raises overall recall over TF-IDF (15.8% to
+19.2%) but at the cost of more false alarms and lower precision, and its gain concentrates
+almost entirely in the one domain where it is genuinely accurate (RAGTruth). The
+contribution is methodological and diagnostic: it shows how to bring distribution-free,
+domain-conditional risk control to hallucination detection, and it characterizes the
+limits that a weak base detector imposes on the achievable operating point.
 
-## 1. Introduction
 
-### 1.1 Motivation
+1. Introduction
 
-Large Language Models (LLMs) have achieved remarkable capabilities in text generation and question-answering, yet they suffer from a critical problem: **hallucination** — generating plausible-sounding but factually incorrect information. This threatens deployment in high-stakes domains:
+1.1 Motivation
 
-- **Medical AI**: Hallucinated diagnoses or drug interactions could harm patients
-- **Financial Systems**: False financial advice could cause significant losses
-- **Legal Analysis**: Fabricated precedents could mislead courts
+Large language models generate fluent text but routinely hallucinate — produce
+plausible-sounding statements that are not faithful to the provided context or to fact.
+In high-stakes settings (clinical question answering, financial analysis, legal research)
+an undetected hallucination can be costly. A practical detector therefore needs not only
+to flag suspected hallucinations but to come with a statement about how reliable that
+flagging is, and ideally a statement that holds separately for each domain rather than
+only on average.
 
-**Current State**: Existing hallucination detectors (e.g., via fine-tuned models or semantic similarity) provide binary predictions ("hallucination" or "faithful") without quantifying confidence. Decision-makers cannot answer: *"If this detector flags a hallucination, how confident should I be?"*
+1.2 What conformal risk control does and does not give you
+
+It is worth being precise about the guarantee, because it is easy to overstate. Conformal
+risk control provides a distribution-free bound on the expected loss of a procedure:
+for a chosen target level α\alpha
+α and a bounded, monotone loss, the procedure's risk is
+at most α\alpha
+α in expectation over the exchangeable calibration/test draw. The Mondrian
+variant fits a separate threshold per domain, so the bound holds conditionally on domain.
 
-### 1.2 Key Challenge: No Uncertainty Quantification
+Two clarifications matter for reading the results below:
 
-Standard classifiers give point estimates:
-```
-Input: "The capital of France is London"
-Detector Output: P(hallucination) = 0.75
-User Question: "Can I trust this with 90% confidence?"
-Problem: No principled answer!
-```
 
-### 1.3 Our Solution: Conformal Risk Control
+This is a guarantee in expectation, not a "with 90% confidence" high-probability
+statement. The latter is the regime of RCPS / Learn-then-Test, which we do not use here.
+The quantity CRC controls is the risk of the set-valued predictor, not any downstream
+classification metric. In particular, the "coverage" numbers reported throughout
+Section 5 are hallucination recall (fraction of true hallucinations flagged), which
+is a property of the resulting classifier, not the risk that the conformal procedure
+pins to α\alpha
+α. Keeping these two senses of "coverage" distinct is essential to
+interpreting the experiments correctly.
 
-We use **Conformal Risk Control (CRC)** — a distribution-free statistical framework that provides:
 
-✓ **Formal coverage guarantees**: "I guarantee ≥90% of hallucinations are detected per domain"  
-✓ **Domain-awareness**: Separate guarantees for Finance, Medicine, General Knowledge  
-✓ **No distributional assumptions**: Works without knowing the data distribution  
+1.3 Contribution
 
----
+We combine hallucination detection, conformal risk control, and Mondrian (domain-wise)
+stratification, and we use the resulting procedure as a diagnostic. The valid per-domain
+guarantee is the easy part; the informative part is the operating frontier it exposes,
+which is governed by how good the base detector actually is on each domain.
 
-## 2. Related Work
 
-### 2.1 Hallucination Detection
+2. Related Work
 
-**Semantic Approaches**:
-- Rashkin et al. (2021): Factuality verification via entailment models
-- Huang et al. (2021): Distinguishing hallucinations via consistency checking
-- Dziri et al. (2022): Self-contradiction detection in dialogue
+Hallucination detection. Prior work spans entailment- and consistency-based factuality
+checking (Rashkin et al., 2021; Huang et al., 2021; Dziri et al., 2022) and benchmark
+construction (TruthfulQA, Lin et al., 2022; FEVER, Thorne et al., 2018). These typically
+produce binary or scalar outputs without a distribution-free reliability statement.
 
-**Limitations**: Binary outputs, no confidence estimation, domain-specific models
+Conformal prediction and risk control. Conformal prediction provides distribution-free
+prediction sets (Vovk et al., 1999; Lei & Wasserman, 2014; Barber et al., 2019). Conformal
+Risk Control (Angelopoulos et al., 2024) generalizes the coverage guarantee to bounded
+monotone losses, controlling E[L]≤α\mathbb{E}[L] \le \alpha
+E[L]≤α; Learn-then-Test (Angelopoulos
+et al., 2025) gives the high-probability counterpart.
 
-**Neural Approaches**:
-- TruthfulQA (Lin et al., 2022): Benchmark for hallucination evaluation
-- HaluBench (Jiang et al., 2023): Multi-domain hallucination dataset
-- FEVER (Thorne et al., 2018): Fact verification framework
+Mondrian / class-conditional conformal. Stratifying calibration by a discrete category
+yields category-conditional guarantees (Vovk's Mondrian framework; Sadinle et al., 2019).
+Here the category is the source domain.
 
-**Gap**: Evaluation metrics (accuracy, F1) don't address uncertainty quantification
+Positioning. We are not aware of prior work that applies Mondrian CRC to hallucination
+detection. The point of this project is less a new method than an honest instantiation:
+what does a valid domain-conditional risk-control procedure deliver on a realistic,
+multi-domain hallucination benchmark, and what limits it.
 
-### 2.2 Conformal Prediction
 
-**Foundational Work**:
-- Vovk et al. (1999): Distribution-free prediction sets
-- Lei & Wasserman (2014): Distribution-free supervised learning
-- Barber et al. (2019): Predictive inference with jackknife+
+3. Method
 
-**Risk Control**:
-- Angelopoulos et al. (2024): "Conformal Risk Control" (ICLR 2024)
-- Angelopoulos et al. (2025): "Learn then test" framework
-- **Key insight**: Guarantee P(loss ≤ λ) ≥ 1-α, not just P(correct) ≥ 1-α
+3.1 Problem setup
 
-**Mondrian Stratification**:
-- Barber et al. (2015): Class-conditional conformal prediction
-- Sadinle et al. (2019): Distribution-free inference with stratification
-- **Advantage**: Domain-specific (or class-specific) guarantees
+Each example is a triple (passage, question, answer) with a binary label
+Y∈{PASS (faithful),FAIL (hallucination)}Y \in \{\text{PASS (faithful)}, \text{FAIL (hallucination)}\}
+Y∈{PASS (faithful),FAIL (hallucination)} and a domain label
+$d \in \{\text{HaluEval}, \text{FinanceBench}, \text{PubMedQA}, \text{CovidQA},
+\text{DROP}, \text{RAGTruth}\}. The base detector outputs $\hat P(\text{FAIL}\mid x)
+,
+and the conformal layer fits a per-domain decision threshold so that the controlled risk
+is bounded at α\alpha
+α within each domain.
 
-### 2.3 Our Contribution
+3.2 Base detectors
 
-**Gap in Literature**: No prior work combines:
-1. Hallucination detection
-2. Conformal Risk Control
-3. Mondrian stratification (domain-specific fairness)
+Phase 1 — TF-IDF + logistic regression. Passage and answer are concatenated and
+vectorized with unigram+bigram TF-IDF (stopwords removed, min_df=2, max_df=0.95),
+giving ~185k sparse features. An L2-penalized logistic regression is trained on the
+training split.
 
-**This Paper**: Fills this gap by proposing **domain-aware CRC for hallucination detection** with formal fairness guarantees.
+Phase 2 — BERT. Sentence embeddings (via sentence-transformers) replace the TF-IDF
+representation, with the same logistic head. This tests whether a semantically richer
+representation changes the operating frontier.
 
----
+In both phases the data are split 60/20/20 (train / calibration / test), stratified by
+domain: 8,940 / 2,980 / 2,980.
 
-## 3. Methodology
+3.3 Conformity score
 
-### 3.1 Problem Setup
+For calibration we use the negative log-likelihood of the true label,
+s(x)=−log⁡P^(Y∣x)s(x) = -\log \hat P(Y \mid x)
+s(x)=−logP^(Y∣x): the score is low when the detector is confident and
+correct, high when it is uncertain or wrong.
 
-**Data**: 
-- Input: (passage, question, answer) tuple
-- Label: Y ∈ {PASS (faithful), FAIL (hallucination)}
-- Domain: d ∈ {HaluEval, FinanceBench, PubMedQA, CovidQA, DROP, RAGTruth}
+3.4 Mondrian CRC
 
-**Goal**: 
-Learn a detector f(x) that returns a prediction set C(x) ⊆ {PASS, FAIL} such that:
-$$P(\text{Y} \in \text{C}(X) | \text{Domain} = d) \geq 1 - \alpha \quad \forall d$$
+Standard (pooled) CRC computes one threshold from all calibration scores. The Mondrian
+variant computes a separate threshold τd\tau_d
+τd​ from the calibration scores of domain dd
+d
+only, and applies τd\tau_d
+τd​ to test examples from that domain. The effect is that the
+risk-control statement holds per domain rather than being averaged across domains — which
+matters when domains differ sharply in difficulty, as they do here.
 
-where α is the miscoverage tolerance (e.g., α=0.10 → 90% coverage guarantee).
-
-### 3.2 Base Detector: TF-IDF + Logistic Regression
-
-**Feature Engineering**:
-1. Combine passage + answer: x_combined = passage + " " + answer
-2. TF-IDF vectorization:
-   - Unigrams + Bigrams
-   - Remove stopwords
-   - min_df=2, max_df=0.95 (reduce noise)
-   - **Result**: 185,059 sparse features per sample
+3.5 Asymmetric loss
 
-**Model**:
-```
-Logistic Regression (L2 penalty)
-P(Y=FAIL | x) = σ(w^T φ(x) + b)
-
-where:
-- φ(x) = TF-IDF feature vector
-- w = learned coefficients
-- b = bias term
-- σ = sigmoid function
-```
+Missing a hallucination (false negative) is usually costlier than a false alarm. The loss
+can be made asymmetric by an FN:FP penalty ratio, which shifts the per-domain threshold
+toward catching more hallucinations. As Section 5.3 shows, this is exactly the knob that
+exposes the recall/false-alarm tradeoff.
 
-**Training**:
-- 5-fold cross-validation on 8,940 training samples
-- Calibration on 2,980 held-out samples
-- Evaluation on 2,980 test samples
 
-### 3.3 Conformity Score
+4. Experimental Setup
 
-For each sample x in the calibration/test set:
-$$\text{NonConformity}(x) = -\log \mathbb{P}(\text{true label} | x)$$
+4.1 Dataset: HaluBench
 
-**Interpretation**:
-- If detector is confident about the true label → low score
-- If detector is uncertain → high score
-- High scores = anomalous/hard samples
+HaluBench (Ravi et al., 2024, "Lynx", Patronus AI) is a 15k-sample benchmark of
+(context, question, answer) triples labeled for hallucination, assembled from six existing
+QA datasets — FinanceBench, PubMedQA, CovidQA, HaluEval, DROP, and RAGTruth — and is the
+first open-source hallucination benchmark to draw on real-world domains such as finance
+and medicine.
 
-**Example**:
-- True label: FAIL (hallucination)
-- P(FAIL | x) = 0.95 (detector confident)
-- Score = -log(0.95) ≈ 0.05 (low)
+Total samples14,900FAIL (hallucination)~7,000 (47%)PASS (faithful)~7,900 (53%)Domains6
 
-### 3.4 Mondrian Conformal Risk Control
+HaluEval dominates the sample count (~10.9k); the remaining five domains contribute a few
+hundred to ~800 each. Splits are stratified by domain.
 
-**Standard CRC** (no stratification):
-1. Compute conformity scores on calibration set: {σ₁, σ₂, ..., σₙ}
-2. Set threshold τ = quantile_{ceil((n+1)(1-α))/n}(σ)
-3. Predict: Flag as FAIL if σ(x_test) ≥ τ
+4.2 Baselines
 
-**Mondrian CRC** (with stratification):
-1. **For each domain d**:
-   - Compute conformity scores only on calibration samples from domain d
-   - Set domain-specific threshold: τ_d = quantile_{...}(σ | domain = d)
-2. **At test time**:
-   - If x_test ∈ domain d: Flag if σ(x_test) ≥ τ_d
+We compare Mondrian CRC against three alternatives: a fixed 0.5 probability threshold (no
+uncertainty quantification); a single pooled CRC threshold (no domain stratification); and
+a fully example-conditional CRC (very conservative).
 
-**Advantage**: Fairness — each domain gets its own guarantee:
-$$P(\text{FAIL detected} | \text{domain} = d) \geq 1 - \alpha \quad \forall d$$
+4.3 Metrics
 
-### 3.5 Asymmetric Loss Function
+Let TP, FP, FN, TN be the usual counts on flagged hallucinations.
 
-**Motivation**: Missing a hallucination (False Negative) is worse than falsely flagging faithful content (False Positive).
+Recall (reported as “coverage”)=#{FAIL flagged}#{total FAIL}\text{Recall (reported as ``coverage'')} = \frac{\#\{\text{FAIL flagged}\}}{\#\{\text{total FAIL}\}}Recall (reported as “coverage”)=#{total FAIL}#{FAIL flagged}​
+False-alarm rate (FAR)=#{PASS flagged}#{total PASS}\text{False-alarm rate (FAR)} = \frac{\#\{\text{PASS flagged}\}}{\#\{\text{total PASS}\}}False-alarm rate (FAR)=#{total PASS}#{PASS flagged}​
+Precision=#{TP}#{TP+FP}\text{Precision} = \frac{\#\{\text{TP}\}}{\#\{\text{TP} + \text{FP}\}}Precision=#{TP+FP}#{TP}​
+Fairness=StdDevd(recalld)\text{Fairness} = \mathrm{StdDev}_d\big(\text{recall}_d\big)Fairness=StdDevd​(recalld​)
+Terminology note. "Coverage" in the tables below is hallucination recall, defined
+above. It is not the conformal coverage / risk that the CRC procedure controls (see
+§1.2). The conformal guarantee is what makes the per-domain comparison meaningful; recall
+and FAR are the downstream quantities we read off the resulting classifier.
 
-In medical/financial contexts:
-- **Cost of FN**: $50K-$200K (missed adverse event, misinformation)
-- **Cost of FP**: $1K-$5K (unnecessary review, embarrassment)
 
-**Implementation**: Adjust thresholds τ_d based on domain importance:
-- Medical domain: τ_medical = lower (more conservative, catch more hallucinations)
-- General knowledge: τ_general = higher (allow more false alarms)
+5. Results
 
----
+5.1 TF-IDF vs BERT (test set, Mondrian CRC)
 
-## 4. Experimental Setup
+MetricTF-IDFBERTRecall ("coverage")15.8%19.2%False-alarm rate5.0%7.0%Precision71.5%58.0%
 
-### 4.1 Dataset: HaluBench
+BERT raises overall recall by ~3.4 points, but false alarms rise and precision drops ~13
+points. This is a trade-off, not a clean upgrade — and the rest of this section
+explains why.
 
-**Source**: PatronusAI HaluBench (Jiang et al., 2023)
+5.2 The gain is not uniform across domains
 
-**Statistics**:
-| Metric | Value |
-|--------|-------|
-| Total Samples | 14,900 |
-| Hallucinations (FAIL) | 7,000 (47%) |
-| Faithful (PASS) | 7,900 (53%) |
-| Domains | 6 |
-| Avg Passage Length | 200 chars |
-| Avg Answer Length | 150 chars |
+Per-domain recall (read from the committed comparison figure; see
+figures/08_bert_vs_tfidf_comparison.png):
 
-**Domains**:
-- **HaluEval** (10,900 samples): General knowledge Q&A
-- **RAGTruth** (~800 samples): Retrieval-augmented generation
-- **PubMedQA** (~600 samples): Biomedical Q&A
-- **FinanceBench** (~600 samples): Financial Q&A
-- **CovidQA** (~600 samples): COVID-19 information
-- **DROP** (~400 samples): Discrete reasoning over passages
+DomainTF-IDFBERTRAGTruth~39%~66%FinanceBench~16%~12%DROP~11%~3%CovidQA~10%~13%PubMedQA~10%~12%HaluEval~8%~8%
 
-**Split Strategy** (stratified by domain):
-- Train: 60% (8,940 samples) → Train base detector
-- Calibration: 20% (2,980 samples) → Fit CRC thresholds
-- Test: 20% (2,980 samples) → Evaluate coverage guarantees
+Almost the entire overall improvement comes from RAGTruth. On DROP and FinanceBench BERT
+actually regresses. The reason is visible in the base detector itself: BERT's accuracy
+by domain (figures/07_bert_detector_performance.png) is ~81% on RAGTruth but only ~39–56%
+on the other five — near chance. The confusion matrix on the calibration set is
+890/624/738/728 (TN/FP/FN/TP), i.e. ~54% accuracy overall and a predicted-probability
+distribution for PASS and FAIL that almost completely overlaps. A conformal layer on top
+of a near-chance detector is valid, but it has nothing discriminative to work with on
+those domains.
 
-### 4.2 Baselines
+5.3 The recall / false-alarm frontier
 
-1. **Baseline 1: Standard 0.5 Threshold**
-   - Predict FAIL if P(FAIL) > 0.5
-   - No uncertainty quantification
+The asymmetric-loss knob makes the trade-off explicit. As the FN:FP penalty increases, the
+threshold is driven to flag more aggressively: recall climbs toward 100%, but the
+false-alarm rate climbs with it, toward flagging essentially everything. There is no
+penalty setting that produces both high recall and low false alarms, because the base
+detector cannot separate the classes on most domains. This — not any deficiency of the
+conformal layer — is the binding constraint.
 
-2. **Baseline 2: Global CRC Threshold**
-   - Single threshold τ for all domains
-   - No domain stratification
+The α\alpha
+α sweep tells the same story from the coverage side: smaller α\alpha
+α (tighter
+target) yields lower recall and lower FAR; larger α\alpha
+α yields higher recall and higher
+FAR, monotonically. At α=0.10\alpha = 0.10
+α=0.10 the TF-IDF operating point is the ~15.8% recall /
+5.0% FAR reported above.
 
-3. **Baseline 3: Fully-Conditional CRC**
-   - Per-sample thresholds (very conservative)
-   - Computationally expensive
+5.4 Mondrian vs pooled stratification
 
-4. **Our Method: Mondrian CRC**
-   - Domain-specific thresholds
-   - Domain-aware fairness
+Against a single pooled threshold, Mondrian produces markedly more uniform recall across
+domains (roughly half the cross-domain standard deviation). A pooled threshold lets the
+dominant, easy domain (RAGTruth) and the dominant-by-count, hard domain (HaluEval) pull
+the single threshold in opposite directions, leaving some domains far from target.
+Mondrian removes that coupling — which is the entire point of stratifying.
 
-### 4.3 Metrics
 
-**Coverage** (primary metric):
-$$\text{Coverage} = \frac{\# \{\text{FAIL correctly flagged}\}}{\# \{\text{total FAILs}\}}$$
+6. Discussion
 
-Target: ≥90% per domain (equivalent to α=0.10)
+6.1 What works
 
-**False Alarm Rate** (specificity):
-$$\text{FAR} = \frac{\# \{\text{PASS incorrectly flagged}\}}{\# \{\text{total PASSs}\}}$$
+The conformal layer does its job: it gives a distribution-free, per-domain risk-control
+statement with no distributional assumptions, and Mondrian stratification delivers the
+intended uniformity across domains. The thresholds are learned automatically per domain
+and are simple, interpretable scalars.
 
-Lower is better (ideal: <5%)
+6.2 The real limitation is the base detector, not the conformal layer
 
-**Precision** (positive predictive value):
-$$\text{Precision} = \frac{\# \{\text{TP}\}}{\# \{\text{TP + FP}\}}$$
+The honest reading of these results is that CRC is valid but cannot rescue a weak
+detector. With a base model near chance on five of six domains, the achievable operating
+points all lie on a steep recall/FAR frontier; you can move along it (via α\alpha
+α or the
+loss ratio) but you cannot escape it. The recall numbers are low not because the guarantee
+"failed" — recall is not the controlled quantity — but because separating hallucinated
+from faithful answers from surface features alone is genuinely hard on these domains.
 
-If detector flags something, probability it's actually a hallucination
+This reframes the path forward. The lever that matters most is detector quality on the
+hard domains (better embeddings, fine-tuning on hallucination examples, ensembling), not
+further tuning of the conformal layer. BERT was the first step in that direction; its
+selective success on RAGTruth and failure elsewhere shows the lever is real but that
+off-the-shelf embeddings are not sufficient.
 
-**Fairness** (coverage std dev across domains):
-$$\text{Fairness} = \text{StdDev}(\text{Coverage}_d \text{ for all domains } d)$$
+6.3 Other limitations
 
-Lower is better (Mondrian ensures uniform coverage)
+HaluBench is constructed by perturbing existing QA datasets and may not match the
+distribution of hallucinations produced by deployed LLMs; the exchangeability assumption
+underlying the guarantee is between calibration and test within this benchmark, not a claim
+about real traffic. The TF-IDF representation is purely lexical. And HaluEval's dominance of
+the sample count means aggregate numbers are effectively HaluEval numbers unless read per
+domain.
 
----
 
-## 5. Results
+7. Conclusion
 
-### 5.1 Main Results: Mondrian CRC on Test Set
+We applied Mondrian Conformal Risk Control to LLM hallucination detection on HaluBench, with
+TF-IDF and BERT base detectors. The conformal layer provides a valid, distribution-free,
+domain-conditional risk-control guarantee, and Mondrian stratification equalizes behavior
+across domains as intended. The substantive finding is diagnostic: the achievable
+recall/false-alarm operating points are governed by the base detector, which is near chance
+on most domains, so high recall is only reachable at high false-alarm cost. BERT improves
+matters only where it is genuinely accurate (RAGTruth) and regresses elsewhere. The clear
+implication for future work is that progress depends on better base detectors on the hard
+domains rather than on the conformal machinery, which is already doing what it guarantees.
 
-**Overall Performance**:
-| Metric | Value |
-|--------|-------|
-| **Coverage** | 16.0% |
-| **False Alarm Rate** | 6.3% |
-| **Precision** | 47.2% |
-| **F1 Score** | 15.9% |
-| **Test Samples** | 2,980 |
 
-**Per-Domain Results**:
+Reproducibility
 
-| Domain | Coverage | FAR | Precision | N |
-|--------|----------|-----|-----------|---|
-| RAGTruth | 39.5% | 0.7% | 95.4% | 217 |
-| FinanceBench | 10.5% | 9.8% | 51.9% | 206 |
-| DROP | 7.5% | 5.4% | 57.9% | 148 |
-| PubMedQA | 11.1% | 7.3% | 60.3% | 207 |
-| CovidQA | 10.3% | 5.2% | 66.3% | 174 |
-| HaluEval | 8.8% | 12.0% | 42.3% | 1,828 |
-
-**Key Insight**: High variance across domains reflects their intrinsic difficulty:
-- RAGTruth: Easiest (high coverage, low false alarms)
-- HaluEval: Hardest (low coverage, high false alarms)
-
-### 5.2 Baseline Comparison
-
-**Coverage (Average Across Domains)**:
-| Method | Coverage | FAR | Precision |
-|--------|----------|-----|-----------|
-| Baseline 1 (0.5 τ) | 37.2% | 34.8% | 51.6% |
-| Baseline 2 (Global τ) | 23.1% | 8.1% | 74.0% |
-| Baseline 3 (Fully-Cond) | 22.0% | 7.8% | 73.9% |
-| **Mondrian CRC (Ours)** | **16.0%** | **6.3%** | **47.2%** |
-
-**Interpretation**:
-- **Mondrian achieves lowest false alarm rate** (6.3% vs 7.8-34.8%)
-- Trade-off: Conservative on coverage (16%) but most reliable
-- Suitable for high-stakes applications (medical, financial)
-
-### 5.3 Ablation Studies
-
-#### Ablation 1: Effect of α (Coverage Target)
-
-| α | Target Coverage | Actual Coverage | FAR | Precision |
-|---|-----------------|-----------------|-----|-----------|
-| 0.05 | 95% | 9.2% | 1.5% | 79.8% |
-| 0.10 | 90% | 16.0% | 6.3% | 47.2% |
-| 0.15 | 85% | 27.1% | 8.2% | 42.1% |
-| 0.20 | 80% | 35.0% | 14.8% | 35.4% |
-
-**Finding**: α=0.10 (90% target) is optimal sweet spot
-- Balances coverage and false alarms
-- Recommended default for production
-
-#### Ablation 2: Effect of Asymmetric Loss (FN/FP Ratio)
-
-| Loss Ratio | Coverage | FAR | Interpretation |
-|------------|----------|-----|-----------------|
-| 1:1 (Symmetric) | 83.3% | 65.0% | Balanced but high FAR |
-| 2:1 | 91.0% | 70.2% | More conservative |
-| 5:1 | 98.0% | 86.1% | Very conservative |
-| 10:1 (Asymmetric) | 100% | 95.0% | Flag almost everything |
-
-**Finding**: Loss ratio ≈2-5:1 recommended for medical/financial
-- Too high (10:1) causes excessive false alarms
-- Domain-specific tuning is crucial
-
-#### Ablation 3: Mondrian vs Global Stratification
-
-| Method | Coverage Std Dev | Min Coverage | Max Coverage |
-|--------|------------------|--------------|--------------|
-| **Mondrian (Per-Domain)** | **12.5%** | 7.5% | 39.5% |
-| Global (Single τ) | 25.3% | 2.1% | 51.2% |
-
-**Finding**: Mondrian is **2× fairer** than global approach
-- Ensures more uniform coverage across domains
-- Prevents one domain from dominating the threshold
-
----
-
-## 6. Discussion
-
-### 6.1 Strengths
-
-✅ **Formal Statistical Guarantees**: 
-- Unlike heuristic approaches, CRC provides proven coverage assurance
-- "With 90% confidence, ≥16% of hallucinations are detected per domain"
-
-✅ **Domain-Aware Fairness**:
-- Mondrian stratification prevents one domain (e.g., HaluEval) from dominating
-- Medical/financial hallucinations are treated with same rigor as general knowledge
-
-✅ **Distribution-Free**:
-- No assumptions about data distribution
-- Works even if HaluBench is not representative of real-world hallucinations
-
-✅ **Practical Threshold Learning**:
-- Automatically tunes τ_d per domain
-- No manual threshold tweaking required
-
-✅ **Interpretable**:
-- Threshold τ is a simple number (e.g., τ_medical = 0.65)
-- Easy to explain to non-technical stakeholders
-
-### 6.2 Limitations
-
-⚠️ **Low Coverage on Some Domains**:
-- HaluEval domain: 8.8% coverage (below 90% target)
-- Reason: Hard domain + conservative TF-IDF features
-- Mitigation: Better base detector (BERT embeddings) in future work
-
-⚠️ **Linear Base Detector**:
-- Logistic regression may miss complex patterns
-- TF-IDF is fixed; doesn't capture semantic meaning
-- Context-aware embeddings (BERT) would improve detection
-
-⚠️ **Calibration/Test Data Mismatch**:
-- HaluBench may not reflect real-world LLM hallucinations
-- Different domains (medical vs web) may have different hallucination patterns
-
-⚠️ **Computational Complexity**:
-- 185K TF-IDF features require sparse matrix operations
-- Fitting logistic regression on large feature spaces is computationally intensive
-
-### 6.3 Why Coverage is Lower Than 90% Target
-
-**Important Note**: Our coverage (16%) is lower than the 90% target because:
-
-1. **Calibration set was small relative to feature dimensionality**
-   - 2,980 calibration samples vs 185K features
-   - Leads to conservative quantile estimation
-
-2. **TF-IDF + LR is weak for hallucination detection**
-   - Semantic features (BERT) would be much stronger
-   - Current approach is baseline; meant to be improved in future work
-
-3. **HaluBench is challenging**
-   - 47% hallucination rate (high baseline)
-   - Mix of easy (RAGTruth: 39.5%) and hard (HaluEval: 8.8%) domains
-   - Reflects realistic hallucination difficulty
-
-**Path Forward**: Replace TF-IDF with BERT embeddings (Phase 3 of project plan)
-
-### 6.4 Fairness & Ethical Considerations
-
-**Domain Fairness**:
-- Mondrian CRC ensures medical and financial hallucinations are detected with equal rigor
-- Prevents scenario where one domain dominates others
-
-**Disparate Impact Analysis**:
-- HaluEval (general knowledge) has 12% FAR
-- Medical domains have <10% FAR
-- Suggests different user populations have different error patterns
-- Mitigation: Use domain-specific loss ratios
-
----
-
-## 7. Ablation Study Insights
-
-### 7.1 α (Miscoverage Tolerance)
-
-**Trade-off Curve**:
-```
-α=0.05 (95% target): 9% coverage, 1.5% FAR
-α=0.10 (90% target): 16% coverage, 6.3% FAR ← RECOMMENDED
-α=0.15 (85% target): 27% coverage, 8.2% FAR
-α=0.20 (80% target): 35% coverage, 14.8% FAR
-```
-
-**Recommendation**:
-- Medical/financial: α=0.05 (95% coverage guarantee)
-- General applications: α=0.10 (90% coverage guarantee)
-- Real-time systems: α=0.20 (80% coverage guarantee, fast inference)
-
-### 7.2 Loss Function Design
-
-**Asymmetric Loss Improves Safety**:
-```
-FN/FP Ratio | Coverage | False Alarm | Use Case
-1:1         | 83%      | 65%         | Academic (balanced)
-2:1         | 91%      | 70%         | Recommended baseline
-5:1         | 98%      | 86%         | Medical/Financial
-10:1        | 100%     | 95%         | (too extreme)
-```
-
-**Domain-Specific Calibration**:
-- Medical: FN_loss ≈ 5:1 (missing hallucination is very bad)
-- Financial: FN_loss ≈ 3:1 (significant but less critical)
-- General knowledge: FN_loss ≈ 2:1 (acceptable false alarms)
-
-### 7.3 Mondrian Stratification is Critical
-
-**Fairness Gap**:
-```
-Mondrian (per-domain):    Coverage Std Dev = 12.5%
-Global (single τ):        Coverage Std Dev = 25.3%
-```
-
-**Why it Matters**:
-- Global threshold: RAGTruth gets 51% coverage, HaluEval gets 2%
-- Users in HaluEval domain believe hallucinations aren't being caught
-- Mondrian ensures equitable coverage guarantees across all domains
-
----
-
-## 8. Future Work
-
-### 8.1 Improve Base Detector (Phase 3 Priority)
-
-**Current**: TF-IDF (bag-of-words, limited semantic understanding)
-
-**Future**:
-1. **BERT Embeddings** (sentence-transformers)
-   - Sentence-level semantic representation
-   - Fine-tuned on hallucination examples
-   - Expected improvement: Coverage +20-30 percentage points
-
-2. **Multi-Modal Embeddings**
-   - Combine text + question + passage representations
-   - Capture structural relationships
-
-3. **Ensemble Methods**
-   - Combine TF-IDF, BERT, and other detectors
-   - Use voting or learned ensemble weights
-
-### 8.2 Advanced CRC Variants
-
-1. **Selective CRC (SCRC)**
-   - First step: decide whether to make a prediction
-   - Second step: apply CRC only to high-confidence predictions
-   - Reduce false alarms further
-
-2. **Sequential CRC (SeqCRC)**
-   - For streaming hallucination detection
-   - Thresholds adapt as new data arrives
-
-3. **Causal CRC**
-   - Estimate counterfactual hallucinations
-   - Understand what causes LLM to hallucinate
-
-### 8.3 External Validation
-
-1. **Cross-Domain Generalization**
-   - Train on HaluBench, test on TruthfulQA, FEVER, CovidQA
-   - Assess domain shift robustness
-
-2. **Real-World Deployment**
-   - Test on actual LLM outputs (GPT-4, Claude, Llama)
-   - Compare to human annotation of hallucinations
-
-3. **Production Benchmarking**
-   - Measure inference time, memory, scalability
-   - Deploy as Flask/FastAPI service
-
-### 8.4 Fairness & Robustness
-
-1. **Adversarial Robustness**
-   - Paraphrased hallucinations
-   - Gradient-based attacks on detector
-
-2. **Demographic Fairness**
-   - Do coverage guarantees hold across text lengths, domains, languages?
-   - Stratify further if needed
-
-3. **Model Interpretability**
-   - Which TF-IDF features trigger hallucination flags?
-   - Explanation for each prediction
-
----
-
-## 9. Conclusion
-
-We introduce **Mondrian Conformal Risk Control for hallucination detection**, providing formal, domain-specific coverage guarantees for LLM outputs. By combining:
-
-1. **TF-IDF embeddings** (185K sparse features)
-2. **Logistic regression** (simple, interpretable base model)
-3. **Conformal Risk Control** (distribution-free statistical guarantees)
-4. **Mondrian stratification** (domain-aware fairness)
-
-We achieve:
-- **16% hallucination detection coverage** with **6.3% false alarms** (lowest among baselines)
-- **Domain-specific guarantees** ensuring 90% confidence per domain
-- **Fair treatment** across Finance, Medicine, General Knowledge (Std Dev: 12.5% vs 25.3% for global approach)
-
-While coverage (16%) is conservative due to limited calibration data and weak base detector, this represents a significant advance in principled hallucination detection. Future work using BERT embeddings is expected to improve coverage substantially.
-
-**Key Contribution**: Demonstrates how modern conformal prediction techniques can bring formal statistical rigor to practical AI safety problems, bridging the gap between academic theory and industry deployment.
+python/01_load_eda.py            # data loading, EDA, stratified splits
+python/02_train_detector.py      # TF-IDF + logistic regression
+python/03_fit_crc.py             # Mondrian CRC thresholds
+python/04_final_evaluation.py    # test-set evaluation
+python/05_baseline_comparison.py # vs fixed / pooled / fully-conditional
+python/06_ablation_studies.py    # alpha, loss ratio, Mondrian vs pooled
+python/07_bert_detector.py       # BERT base detector
+python/08_bert_crc_comparison.py # BERT vs TF-IDF under CRC
 
 ---
 
