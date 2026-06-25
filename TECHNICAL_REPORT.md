@@ -42,11 +42,9 @@ only on average.
 
 It is worth being precise about the guarantee, because it is easy to overstate. Conformal
 risk control provides a distribution-free bound on the expected loss of a procedure:
-for a chosen target level α\alpha
-α and a bounded, monotone loss, the procedure's risk is
-at most α\alpha
-α in expectation over the exchangeable calibration/test draw. The Mondrian
-variant fits a separate threshold per domain, so the bound holds conditionally on domain.
+for a chosen target level α and a bounded, monotone loss, the procedure's risk is at most
+α in expectation over the exchangeable calibration/test draw. The Mondrian variant fits a
+separate threshold per domain, so the bound holds conditionally on domain.
 
 Two clarifications matter for reading the results below:
 
@@ -57,9 +55,8 @@ The quantity CRC controls is the risk of the set-valued predictor, not any downs
 classification metric. In particular, the "coverage" numbers reported throughout
 Section 5 are hallucination recall (fraction of true hallucinations flagged), which
 is a property of the resulting classifier, not the risk that the conformal procedure
-pins to α\alpha
-α. Keeping these two senses of "coverage" distinct is essential to
-interpreting the experiments correctly.
+pins to α. Keeping these two senses of "coverage" distinct is essential to interpreting
+the experiments correctly.
 
 
 1.3 Contribution
@@ -78,11 +75,10 @@ construction (TruthfulQA, Lin et al., 2022; FEVER, Thorne et al., 2018). These t
 produce binary or scalar outputs without a distribution-free reliability statement.
 
 Conformal prediction and risk control. Conformal prediction provides distribution-free
-prediction sets (Vovk et al., 1999; Lei & Wasserman, 2014; Barber et al., 2019). Conformal
+prediction sets (Vovk et al., 1999; Lei & Wasserman, 2014; Barber et al., 2021). Conformal
 Risk Control (Angelopoulos et al., 2024) generalizes the coverage guarantee to bounded
-monotone losses, controlling E[L]≤α\mathbb{E}[L] \le \alpha
-E[L]≤α; Learn-then-Test (Angelopoulos
-et al., 2025) gives the high-probability counterpart.
+monotone losses, controlling E[L] ≤ α; Learn-then-Test (Angelopoulos et al., 2025) gives
+the high-probability counterpart.
 
 Mondrian / class-conditional conformal. Stratifying calibration by a discrete category
 yields category-conditional guarantees (Vovk's Mondrian framework; Sadinle et al., 2019).
@@ -99,14 +95,10 @@ multi-domain hallucination benchmark, and what limits it.
 3.1 Problem setup
 
 Each example is a triple (passage, question, answer) with a binary label
-Y∈{PASS (faithful),FAIL (hallucination)}Y \in \{\text{PASS (faithful)}, \text{FAIL (hallucination)}\}
-Y∈{PASS (faithful),FAIL (hallucination)} and a domain label
-$d \in \{\text{HaluEval}, \text{FinanceBench}, \text{PubMedQA}, \text{CovidQA},
-\text{DROP}, \text{RAGTruth}\}. The base detector outputs $\hat P(\text{FAIL}\mid x)
-,
+Y ∈ {PASS (faithful), FAIL (hallucination)} and a domain label d ∈ {HaluEval, FinanceBench,
+PubMedQA, CovidQA, DROP, RAGTruth}. The base detector outputs an estimate of P(FAIL | x),
 and the conformal layer fits a per-domain decision threshold so that the controlled risk
-is bounded at α\alpha
-α within each domain.
+is bounded at α within each domain.
 
 3.2 Base detectors
 
@@ -125,20 +117,16 @@ domain: 8,940 / 2,980 / 2,980.
 3.3 Conformity score
 
 For calibration we use the negative log-likelihood of the true label,
-s(x)=−log⁡P^(Y∣x)s(x) = -\log \hat P(Y \mid x)
-s(x)=−logP^(Y∣x): the score is low when the detector is confident and
-correct, high when it is uncertain or wrong.
+s(x) = −log P̂(Y | x): the score is low when the detector is confident and correct, high
+when it is uncertain or wrong.
 
 3.4 Mondrian CRC
 
 Standard (pooled) CRC computes one threshold from all calibration scores. The Mondrian
-variant computes a separate threshold τd\tau_d
-τd​ from the calibration scores of domain dd
-d
-only, and applies τd\tau_d
-τd​ to test examples from that domain. The effect is that the
-risk-control statement holds per domain rather than being averaged across domains — which
-matters when domains differ sharply in difficulty, as they do here.
+variant computes a separate threshold τ_d from the calibration scores of domain d only,
+and applies τ_d to test examples from that domain. The effect is that the risk-control
+statement holds per domain rather than being averaged across domains — which matters when
+domains differ sharply in difficulty, as they do here.
 
 3.5 Asymmetric loss
 
@@ -218,14 +206,9 @@ penalty setting that produces both high recall and low false alarms, because the
 detector cannot separate the classes on most domains. This — not any deficiency of the
 conformal layer — is the binding constraint.
 
-The α\alpha
-α sweep tells the same story from the coverage side: smaller α\alpha
-α (tighter
-target) yields lower recall and lower FAR; larger α\alpha
-α yields higher recall and higher
-FAR, monotonically. At α=0.10\alpha = 0.10
-α=0.10 the TF-IDF operating point is the ~15.8% recall /
-5.0% FAR reported above.
+The α sweep tells the same story from the coverage side: smaller α (tighter target) yields
+lower recall and lower FAR; larger α yields higher recall and higher FAR, monotonically. At
+α = 0.10 the TF-IDF operating point is the ~15.8% recall / 5.0% FAR reported above.
 
 5.4 Mondrian vs pooled stratification
 
@@ -249,9 +232,8 @@ and are simple, interpretable scalars.
 
 The honest reading of these results is that CRC is valid but cannot rescue a weak
 detector. With a base model near chance on five of six domains, the achievable operating
-points all lie on a steep recall/FAR frontier; you can move along it (via α\alpha
-α or the
-loss ratio) but you cannot escape it. The recall numbers are low not because the guarantee
+points all lie on a steep recall/FAR frontier; you can move along it (via α or the loss
+ratio) but you cannot escape it. The recall numbers are low not because the guarantee
 "failed" — recall is not the controlled quantity — but because separating hallucinated
 from faithful answers from surface features alone is genuinely hard on these domains.
 
@@ -284,153 +266,128 @@ implication for future work is that progress depends on better base detectors on
 domains rather than on the conformal machinery, which is already doing what it guarantees.
 
 
-Reproducibility
+References
 
-python/01_load_eda.py            # data loading, EDA, stratified splits
-python/02_train_detector.py      # TF-IDF + logistic regression
-python/03_fit_crc.py             # Mondrian CRC thresholds
-python/04_final_evaluation.py    # test-set evaluation
-python/05_baseline_comparison.py # vs fixed / pooled / fully-conditional
-python/06_ablation_studies.py    # alpha, loss ratio, Mondrian vs pooled
-python/07_bert_detector.py       # BERT base detector
-python/08_bert_crc_comparison.py # BERT vs TF-IDF under CRC
+Angelopoulos, A. N., Bates, S., Fisch, A., Lei, L., & Schuster, T. (2024). Conformal Risk
+Control. International Conference on Learning Representations (ICLR). arXiv:2208.02814.
 
----
+Angelopoulos, A. N., Bates, S., Candès, E. J., Jordan, M. I., & Lei, L. (2025). Learn then
+Test: Calibrating predictive algorithms to achieve risk control. Annals of Applied
+Statistics, 19(2), 1641–1662.
 
-## References
+Barber, R. F., Candès, E. J., Ramdas, A., & Tibshirani, R. J. (2021). Predictive inference
+with the jackknife+. Annals of Statistics, 49(1), 486–507.
 
-1. Angelopoulos, A. N., et al. (2024). "Conformal Risk Control." In *Proceedings of the 41st International Conference on Machine Learning (ICLR)*. arXiv:2401.03618
+Dziri, N., Milton, S., Yu, M., Zaiane, O., & Reddy, S. (2022). On the Origin of
+Hallucinations in Conversational Models: Is it the Datasets or the Models? NAACL-HLT,
+5271–5285.
 
-2. Angelopoulos, A. N., et al. (2025). "Learn then test: Calibrating predictive algorithms to achieve risk control." *The Annals of Applied Statistics*. (In press)
+Huang, L., et al. (2021). [Hallucination in neural abstractive summarization. — confirm
+exact title/venue before listing on the CV.]
 
-3. Barber, R. F., et al. (2019). "Predictive inference with the jackknife+." *Annals of Statistics*, 47(3), 1457-1489.
+Lei, J., & Wasserman, L. (2014). Distribution-free prediction bands for non-parametric
+regression. Journal of the Royal Statistical Society: Series B, 76(1), 71–96.
 
-4. Barber, R. F., & Candes, E. J. (2015). "Controlling the false discovery rate via knockoffs." *Annals of Statistics*, 43(5), 2055-2085.
+Lin, S., Hilton, J., & Evans, O. (2022). TruthfulQA: Measuring How Models Mimic Human
+Falsehoods. Association for Computational Linguistics (ACL).
 
-5. Campos, J., et al. (2024). "Conformal Prediction for NLP: A Survey." *Transactions of the Association for Computational Linguistics (TACL)*, 12, 851-876.
+Rashkin, H., et al. (2021). [Faithfulness / attribution in language generation. — confirm
+exact title/venue before listing on the CV.]
 
-6. Dziri, N., et al. (2022). "Self-diagnosis and self-debiasing of vision-language models." In *Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing (EMNLP)*.
+Ravi, S. S., Mielczarek, B., Kannappan, A., Kiela, D., & Qian, R. (2024). Lynx: An Open
+Source Hallucination Evaluation Model. arXiv:2407.08488. (HaluBench dataset.)
 
-7. Huang, L., et al. (2021). "What have we learned from the evaluation of hallucinations in neural abstractive summarization?" In *Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing (EMNLP)*.
+Sadinle, M., Lei, J., & Wasserman, L. (2019). Least Ambiguous Set-Valued Classifiers with
+Bounded Error Levels. Journal of the American Statistical Association, 114(525), 223–234.
 
-8. Jiang, X., et al. (2023). "HaluBench: An Open-Source Benchmark for Evaluating Hallucination in Large Language Models." In *Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing (EMNLP)*.
+Thorne, J., Vlachos, A., Christodoulopoulos, C., & Mittal, A. (2018). FEVER: a Large-scale
+Dataset for Fact Extraction and VERification. NAACL-HLT.
 
-9. Lei, J., & Wasserman, L. (2014). "Distribution-free prediction bands for nonparametric regression." *Journal of the Royal Statistical Society: Series B*, 76(1), 71-96.
+Vovk, V., Gammerman, A., & Saunders, C. (1999). Machine-learning applications of
+algorithmic randomness. International Conference on Machine Learning (ICML), 444–453.
 
-10. Lin, S., et al. (2022). "TruthfulQA: Measuring how models mimic human falsehoods." In *Proceedings of the 60th Annual Meeting of the Association for Computational Linguistics (ACL)*.
 
-11. Rashkin, H., et al. (2021). "Measuring Attribution in Natural Language Generation Models." In *Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing (EMNLP)*.
+Appendix: Implementation Details
 
-12. Sadinle, M., et al. (2019). "Least ambiguous set-valued classifiers with bounded error levels." *Journal of the American Statistical Association*, 114(525), 223-234.
+The code below is the Phase 1 (TF-IDF) pipeline. Phase 2 swaps the TF-IDF vectorizer for a
+sentence-transformers encoder; the CRC and evaluation logic (C–D) is identical.
 
-13. Thorne, J., et al. (2018). "FEVER: A Large-scale Dataset for Fact Extraction and VERification." In *Proceedings of the 2018 Conference of the North American Chapter of the Association for Computational Linguistics*.
+A. Data preprocessing
 
-14. Vovk, V., et al. (1999). "Transductive confidence machines for pattern recognition." *Machine Learning*, 47(2-3), 207-243.
-
----
-
-## Appendix: Implementation Details
-
-### A. Data Preprocessing
-
-```python
-# Combine passage and answer
+python# Combine passage and answer
 x_combined = passage + " " + answer
 
-# TF-IDF Vectorization
+# TF-IDF vectorization
 tfidf = TfidfVectorizer(
-    max_features=None,      # Keep all features
-    min_df=2,               # Word must appear in ≥2 docs
-    max_df=0.95,            # Word in ≤95% of docs
-    ngram_range=(1, 2),     # Unigrams + bigrams
+    max_features=None,      # keep all features
+    min_df=2,               # token must appear in >= 2 docs
+    max_df=0.95,            # token in <= 95% of docs
+    ngram_range=(1, 2),     # unigrams + bigrams
     lowercase=True,
-    stop_words='english'
+    stop_words='english',
 )
 
-X_train = tfidf.fit_transform(train_texts)   # 8940 × 185059
-X_calib = tfidf.transform(calib_texts)       # 2980 × 185059
-X_test = tfidf.transform(test_texts)         # 2980 × 185059
-```
+X_train = tfidf.fit_transform(train_texts)   # 8940 x 185059
+X_calib = tfidf.transform(calib_texts)       # 2980 x 185059
+X_test  = tfidf.transform(test_texts)        # 2980 x 185059
 
-### B. Logistic Regression Training
+B. Logistic regression
 
-```python
-from sklearn.linear_model import LogisticRegression
+pythonfrom sklearn.linear_model import LogisticRegression
 
 lr = LogisticRegression(
     max_iter=1000,
-    solver='saga',      # Works well with sparse matrices
+    solver='saga',     # handles large sparse matrices
     random_state=42,
-    n_jobs=-1          # Use all CPU cores
+    n_jobs=-1,
 )
-
 lr.fit(X_train, y_train)
+y_proba = lr.predict_proba(X_calib)   # (2980, 2)
 
-# Predictions
-y_proba = lr.predict_proba(X_calib)  # Shape: (2980, 2)
-```
+C. Per-domain CRC thresholds
 
-### C. CRC Threshold Computation
+pythonimport numpy as np
 
-```python
-# For each domain d in calibration set:
-domain_calib = calib[calib['source_ds'] == d]
-n_d = len(domain_calib)
-
-# Conformity scores
-sigma = -np.log(pmax(proba_true_label, 1e-10))
-
-# CRC threshold (conservative quantile)
 alpha = 0.10
-quantile_level = np.ceil((n_d + 1) * (1 - alpha)) / n_d
-tau_d = np.quantile(sigma, quantile_level)
+thresholds = {}
 
-# Store for test time
-thresholds_d[domain] = tau_d
-```
+for d in domains:
+    mask = (calib['source_ds'] == d)
+    proba_true = y_proba_calib[mask, true_label_idx[mask]]
+    sigma = -np.log(np.maximum(proba_true, 1e-10))   # conformity scores
 
-### D. Test Set Evaluation
+    n_d = mask.sum()
+    q = np.ceil((n_d + 1) * (1 - alpha)) / n_d        # conservative level
+    thresholds[d] = np.quantile(sigma, min(q, 1.0))
 
-```python
-# For each test sample:
-domain_test = sample['domain']
-tau_d = thresholds[domain_test]
-sigma_test = -np.log(pmax(proba_true_label_test, 1e-10))
+D. Test-set evaluation
 
-# Prediction
-flagged = (sigma_test >= tau_d)
+pythonproba_true_test = y_proba_test[np.arange(len(test)), true_label_idx_test]
+sigma_test = -np.log(np.maximum(proba_true_test, 1e-10))
+tau = np.array([thresholds[d] for d in test['source_ds']])
 
-# Coverage: fraction of FAILs flagged
-coverage_d = (flagged & (label_test == 'FAIL')).sum() / (label_test == 'FAIL').sum()
-```
+flagged = sigma_test >= tau
+is_fail = (test['label'] == 'FAIL').values
 
----
+# Recall ("coverage") per domain
+for d in domains:
+    m = (test['source_ds'] == d).values
+    recall_d = (flagged & is_fail & m).sum() / (is_fail & m).sum()
 
-## Appendix: Reproducibility
+E. Requirements and runtime
 
-**Code**: All code is available at: https://github.com/TareqAldirawi94/llm-hallucination-crc
-
-**Datasets**: HaluBench available at: https://huggingface.co/datasets/PatronusAI/HaluBench
-
-**Requirements**:
-```
 pandas==2.0.0
 numpy==1.24.0
 scikit-learn==1.3.0
+scipy==1.11.0
 matplotlib==3.8.0
 seaborn==0.13.0
-```
+torch>=2.2.0
+transformers>=4.40.0
+sentence-transformers>=2.7.0
 
-**Runtime**: ~1 hour total (Blocks 1-6)
-- Block 1 (EDA): 5 minutes
-- Block 2 (Detector): 20 minutes
-- Block 3 (CRC): 10 minutes
-- Block 4 (Evaluation): 10 minutes
-- Block 5 (Baselines): 10 minutes
-- Block 6 (Ablations): 5 minutes
+Phase 1 (Blocks 1–6) runs in roughly an hour on CPU. Phase 2 (Blocks 7–8) adds the cost of
+encoding ~15k texts with BERT, which dominates its runtime and benefits from a GPU.
 
----
-
-**Generated**: June 2026  
-**Version**: 1.0  
-**Status**: Ready for review & submission
+Code: https://github.com/TareqAldirawi94/llm-hallucination-crc
+Dataset: https://huggingface.co/datasets/PatronusAI/HaluBench
