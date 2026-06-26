@@ -33,7 +33,6 @@ calib = pd.read_csv("data/processed/calibration.csv")
 print(f"✓ Train: {len(train):,} samples")
 print(f"✓ Calib: {len(calib):,} samples\n")
 
-# Check label balance
 train_fail = (train['label'] == 'FAIL').sum()
 train_pass = (train['label'] == 'PASS').sum()
 calib_fail = (calib['label'] == 'FAIL').sum()
@@ -50,13 +49,10 @@ print(f"  Calib: {calib_fail:,} FAIL ({calib_fail/len(calib)*100:.1f}%), "
 
 print("[STEP 2/5] Creating text features (TF-IDF)...")
 
-# Combine passage + answer
 train['combined_text'] = train['passage'] + " " + train['answer']
 calib['combined_text'] = calib['passage'] + " " + calib['answer']
 
 print("  Fitting TF-IDF vectorizer on training set...")
-# Create TF-IDF vectorizer
-# max_features=None keeps ALL features (no truncation!)
 tfidf = TfidfVectorizer(
     max_features=None,          # Keep all features
     min_df=2,                   # Remove words appearing in < 2 documents
@@ -66,16 +62,13 @@ tfidf = TfidfVectorizer(
     stop_words='english'
 )
 
-# Fit on training data
 X_train = tfidf.fit_transform(train['combined_text'])
 print(f"✓ Train TF-IDF matrix: {X_train.shape[0]:,} samples × {X_train.shape[1]:,} features")
 
-# Transform calibration data
 print("  Transforming calibration set...")
 X_calib = tfidf.transform(calib['combined_text'])
 print(f"✓ Calib TF-IDF matrix: {X_calib.shape[0]:,} samples × {X_calib.shape[1]:,} features")
 
-# Convert labels to binary (FAIL=1, PASS=0)
 y_train = (train['label'] == 'FAIL').astype(int)
 y_calib = (calib['label'] == 'FAIL').astype(int)
 
@@ -95,14 +88,9 @@ lr_model = LogisticRegression(
     n_jobs=-1       # Use all CPU cores
 )
 
-# 5-fold cross-validation
 cv_results = cross_validate(
-    lr_model, 
-    X_train, 
-    y_train,
-    cv=5,
-    scoring=['accuracy', 'precision', 'recall', 'f1'],
-    n_jobs=-1
+    lr_model, X_train, y_train, cv=5,
+    scoring=['accuracy', 'precision', 'recall', 'f1'], n_jobs=-1
 )
 
 cv_accuracy = cv_results['test_accuracy'].mean()
@@ -116,7 +104,6 @@ print(f"  CV Precision: {cv_precision*100:.1f}%")
 print(f"  CV Recall: {cv_recall*100:.1f}%")
 print(f"  CV F1: {cv_f1*100:.1f}%\n")
 
-# Train final model on full training set
 print("  Training final model on full training set...")
 lr_model.fit(X_train, y_train)
 print(f"✓ Final model ready\n")
@@ -127,11 +114,9 @@ print(f"✓ Final model ready\n")
 
 print("[STEP 4/5] Getting predictions on calibration set...")
 
-# Get probability predictions
 calib_probs = lr_model.predict_proba(X_calib)  # [[P(PASS), P(FAIL)], ...]
 calib_preds = lr_model.predict(X_calib)         # [0 or 1, ...]
 
-# Create results dataframe
 calib_results = calib.copy()
 calib_results['pred_prob_fail'] = calib_probs[:, 1]  # P(FAIL)
 calib_results['pred_prob_pass'] = calib_probs[:, 0]  # P(PASS)
@@ -144,35 +129,34 @@ print(f"✓ Predictions complete")
 print(f"  Accuracy on calibration set: {accuracy*100:.1f}%\n")
 
 # ============================================================================
-# STEP 5: COMPUTE CONFORMITY SCORES
+# STEP 5: HALLUCINATION SCORE (label-free, used for CRC)
 # ============================================================================
 
-print("[STEP 5/5] Computing conformity scores...")
+print("[STEP 5/5] Computing hallucination scores...")
 
-# Conformity score = -log(probability of predicted label)
-calib_results['pred_prob'] = calib_results.apply(
-    lambda row: row['pred_prob_fail'] if row['label'] == 'FAIL' 
-                else row['pred_prob_pass'],
-    axis=1
-)
+# The CRC score is the detector's predicted probability of FAIL, s(x) = P(FAIL | x).
+# It does NOT use the true label, so it is computed the SAME way on calibration
+# and on test data. Downstream flagging rule: flag as hallucination if s(x) >= tau.
+#
+# (The previous version used -log P(true label | x). That needs the true label,
+#  so it is not computable at test time and inverts the flag direction; replaced.)
+calib_results['score'] = calib_results['pred_prob_fail']
 
-# Clip to avoid log(0)
-calib_results['pred_prob'] = calib_results['pred_prob'].clip(lower=1e-10)
+mean_score = calib_results['score'].mean()
+median_score = calib_results['score'].median()
+std_score = calib_results['score'].std()
+min_score = calib_results['score'].min()
+max_score = calib_results['score'].max()
 
-# Conformity score
-calib_results['conformity_score'] = -np.log(calib_results['pred_prob'])
+# Quick separation check: mean score on FAIL should exceed mean score on PASS
+mean_fail = calib_results.loc[calib_results['label'] == 'FAIL', 'score'].mean()
+mean_pass = calib_results.loc[calib_results['label'] == 'PASS', 'score'].mean()
 
-mean_score = calib_results['conformity_score'].mean()
-median_score = calib_results['conformity_score'].median()
-std_score = calib_results['conformity_score'].std()
-min_score = calib_results['conformity_score'].min()
-max_score = calib_results['conformity_score'].max()
-
-print(f"✓ Conformity scores computed")
-print(f"  Mean: {mean_score:.3f}")
-print(f"  Median: {median_score:.3f}")
-print(f"  Std Dev: {std_score:.3f}")
-print(f"  Range: [{min_score:.3f}, {max_score:.3f}]\n")
+print(f"✓ Hallucination scores computed  (s = P(FAIL | x))")
+print(f"  Mean: {mean_score:.3f}   Median: {median_score:.3f}   Std: {std_score:.3f}")
+print(f"  Range: [{min_score:.3f}, {max_score:.3f}]")
+print(f"  Mean score | FAIL: {mean_fail:.3f}   Mean score | PASS: {mean_pass:.3f}   "
+      f"(separation: {mean_fail - mean_pass:+.3f})\n")
 
 # ============================================================================
 # CREATE VISUALIZATIONS
@@ -182,9 +166,8 @@ print("Creating visualizations...")
 
 fig, axes = plt.subplots(2, 2, figsize=(12, 8))
 
-# Plot 1: Confusion matrix
 from sklearn.metrics import confusion_matrix
-cm = confusion_matrix(calib_results['label'], calib_results['pred_class'], 
+cm = confusion_matrix(calib_results['label'], calib_results['pred_class'],
                       labels=['PASS', 'FAIL'])
 
 ax = axes[0, 0]
@@ -194,7 +177,6 @@ ax.set_title('Confusion Matrix', fontweight='bold', fontsize=12)
 ax.set_ylabel('True Label')
 ax.set_xlabel('Predicted Label')
 
-# Plot 2: Probability distribution
 ax = axes[0, 1]
 for label in ['PASS', 'FAIL']:
     subset = calib_results[calib_results['label'] == label]
@@ -205,19 +187,14 @@ ax.set_ylabel('Count')
 ax.set_title('Predicted Probability Distribution', fontweight='bold', fontsize=12)
 ax.legend()
 
-# Plot 3: Conformity scores by label
+# Hallucination score by true label: FAIL should sit higher than PASS.
 ax = axes[1, 0]
-for label in ['PASS', 'FAIL']:
-    subset = calib_results[calib_results['label'] == label]
-    ax.scatter([label]*len(subset), subset['conformity_score'], alpha=0.5, s=20)
-calib_results.boxplot(column='conformity_score', by='label', ax=ax)
-ax.set_title('Conformity Scores by Label', fontweight='bold', fontsize=12)
-ax.set_ylabel('Conformity Score')
+calib_results.boxplot(column='score', by='label', ax=ax)
+ax.set_title('Hallucination Score s = P(FAIL|x) by Label', fontweight='bold', fontsize=12)
+ax.set_ylabel('Score')
 ax.set_xlabel('True Label')
-plt.sca(ax)
-plt.xticks([1, 2], ['PASS', 'FAIL'])
+plt.suptitle('')  # remove the automatic "Boxplot grouped by label" supertitle
 
-# Plot 4: Accuracy by domain
 ax = axes[1, 1]
 domain_accuracy = calib_results.groupby('source_ds')['correct'].mean().sort_values()
 domain_accuracy.plot(kind='barh', ax=ax, color='steelblue')
@@ -236,12 +213,10 @@ print("✓ Saved visualization to python/outputs/02_detector_performance.png")
 
 print("\nSaving results...")
 
-# Save calibration predictions (drop helper columns)
 calib_results_save = calib_results[[
     'id', 'passage', 'question', 'answer', 'label', 'source_ds',
-    'pred_prob_fail', 'pred_prob_pass', 'pred_class', 'correct', 'conformity_score'
+    'pred_prob_fail', 'pred_prob_pass', 'pred_class', 'correct', 'score'
 ]]
-
 calib_results_save.to_csv("data/processed/calib_predictions.csv", index=False)
 print("✓ Saved predictions to data/processed/calib_predictions.csv")
 
@@ -253,7 +228,6 @@ print("\n" + "="*80)
 print("BLOCK 2 COMPLETE - SUMMARY")
 print("="*80 + "\n")
 
-# Calculate metrics
 tn = ((calib_results['pred_class'] == 'PASS') & (calib_results['label'] == 'PASS')).sum()
 fp = ((calib_results['pred_class'] == 'FAIL') & (calib_results['label'] == 'PASS')).sum()
 fn = ((calib_results['pred_class'] == 'PASS') & (calib_results['label'] == 'FAIL')).sum()
@@ -269,7 +243,7 @@ Detector Model: TF-IDF + Logistic Regression
 Features: {X_train.shape[1]:,} TF-IDF features (FULL feature set)
 Samples: {len(calib_results):,} calibration
 
-Performance Metrics:
+Performance Metrics (0.5 threshold, for reference only):
   - Overall Accuracy: {overall_accuracy*100:.1f}%
   - Precision (Detect FAIL): {precision*100:.1f}%
   - Recall (Detect FAIL): {recall*100:.1f}%
@@ -281,20 +255,18 @@ Cross-Validation (on training set):
   - CV Recall: {cv_recall*100:.1f}%
   - CV F1: {cv_f1*100:.1f}%
 
-Confusion Matrix:
+Confusion Matrix (0.5 threshold):
   - True Positives (FAIL → FAIL): {tp:,}
   - False Positives (PASS → FAIL): {fp:,}
   - True Negatives (PASS → PASS): {tn:,}
   - False Negatives (FAIL → PASS): {fn:,}
 
-Conformity Scores (for CRC):
-  - Mean: {mean_score:.3f}
-  - Median: {median_score:.3f}
-  - Std Dev: {std_score:.3f}
-  - Range: [{min_score:.3f}, {max_score:.3f}]
+Hallucination score for CRC: s(x) = P(FAIL | x)  (label-free)
+  - Mean: {mean_score:.3f}   Median: {median_score:.3f}   Std: {std_score:.3f}
+  - Mean | FAIL: {mean_fail:.3f}   Mean | PASS: {mean_pass:.3f}   (sep: {mean_fail - mean_pass:+.3f})
 
 Files Saved:
-  ✓ data/processed/calib_predictions.csv
+  ✓ data/processed/calib_predictions.csv   (now carries 'score' = P(FAIL|x))
   ✓ python/outputs/02_detector_performance.png
 
 ✓ Ready for Block 3 - Fit Mondrian CRC thresholds per domain
