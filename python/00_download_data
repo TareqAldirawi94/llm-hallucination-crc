@@ -1,0 +1,73 @@
+################################################################################
+# BLOCK 0: DOWNLOAD HALUBENCH -> halubench_raw.csv   (run once)
+# Author: Tareq Aldirawi
+# Date: June 2026
+#
+# Avoids the parquet/pyarrow incompatibility on Python 3.14 by pulling the
+# dataset through the HuggingFace `datasets` library and writing a plain CSV.
+################################################################################
+
+import sys
+import subprocess
+import pandas as pd
+from pathlib import Path
+
+# ----------------------------------------------------------------------------
+# Ensure the `datasets` library is available
+# ----------------------------------------------------------------------------
+try:
+    from datasets import load_dataset
+except ImportError:
+    print("Installing the 'datasets' library...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "datasets"])
+    from datasets import load_dataset
+
+print("\n" + "=" * 80)
+print("BLOCK 0: DOWNLOAD HALUBENCH")
+print("=" * 80 + "\n")
+
+# ----------------------------------------------------------------------------
+# Load HaluBench from the Hub. It ships as a single 'test' split (~15k rows).
+# ----------------------------------------------------------------------------
+print("Downloading PatronusAI/HaluBench from HuggingFace ...")
+ds = load_dataset("PatronusAI/HaluBench", split="test")
+df = ds.to_pandas()
+print(f"\u2713 Downloaded: {df.shape[0]:,} rows \u00d7 {df.shape[1]} columns")
+print(f"  Columns: {df.columns.tolist()}\n")
+
+# ----------------------------------------------------------------------------
+# Normalize column names to what Block 1 expects:
+#   id, passage, question, answer, label, source_ds
+# HaluBench already uses these names, but we guard against minor variants.
+# ----------------------------------------------------------------------------
+rename_map = {
+    "source_dataset": "source_ds",
+    "source": "source_ds",
+    "ground_truth": "label",
+}
+df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+
+required = ["id", "passage", "question", "answer", "label", "source_ds"]
+missing = [c for c in required if c not in df.columns]
+if missing:
+    raise KeyError(
+        f"Expected columns missing after rename: {missing}. "
+        f"Got: {df.columns.tolist()}. Tell Claude the actual column names."
+    )
+
+# Keep just what we need, drop any empty rows in key fields
+df = df[required].dropna(subset=["passage", "answer", "label", "source_ds"]).reset_index(drop=True)
+
+# ----------------------------------------------------------------------------
+# Sanity print + save
+# ----------------------------------------------------------------------------
+print("Label distribution:")
+print(df["label"].value_counts(), "\n")
+print("Domain distribution:")
+print(df["source_ds"].value_counts(), "\n")
+
+Path("data/raw").mkdir(parents=True, exist_ok=True)
+out = "halubench_raw.csv"
+df.to_csv(out, index=False)
+print(f"\u2713 Saved {len(df):,} rows to {out}")
+print("  -> Now update Block 1 to read this CSV (one-line change), then run 1 \u2192 2 \u2192 3.\n")
