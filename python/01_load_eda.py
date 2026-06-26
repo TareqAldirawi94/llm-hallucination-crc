@@ -30,20 +30,12 @@ Path("python/outputs").mkdir(parents=True, exist_ok=True)
 print("✓ Directories created\n")
 
 # ============================================================================
-# STEP 2: LOAD PARQUET FILE
+# STEP 2: LOAD DATA (CSV produced by Block 0)
 # ============================================================================
 
-print("[STEP 2/6] Loading HaluBench from parquet file...\n")
+print("[STEP 2/6] Loading HaluBench from halubench_raw.csv...\n")
 
-try:
-    import pyarrow.parquet as pq
-    df = pd.read_parquet("halubench_raw.parquet")
-except ImportError:
-    print("Installing pyarrow...")
-    import subprocess
-    subprocess.check_call(["pip", "install", "pyarrow"])
-    df = pd.read_parquet("halubench_raw.parquet")
-
+df = pd.read_csv("halubench_raw.csv")
 df = df.reset_index(drop=True)
 
 print(f"✓ Successfully loaded")
