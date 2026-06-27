@@ -1,346 +1,256 @@
 ################################################################################
-# BLOCK 5: BASELINE COMPARISONS & ABLATION STUDIES
+# BLOCK 5: BASELINE COMPARISON  (matched-recall, honest)
 # Author: Tareq Aldirawi
 # Date: June 2026
 # Language: Python
+################################################################################
+#
+# Because the detector's AUC is ~0.5, "which method detects more hallucinations"
+# is meaningless on its own -- every method sits on the same near-diagonal ROC, so
+# higher recall just means a lower threshold and more false alarms. The honest
+# comparison holds recall fixed and asks what each method costs, and -- the real
+# point of Mondrian -- whether the per-domain recall is UNIFORM.
+#
+# Methods (all on s(x) = P(FAIL|x), calibrated on calib, evaluated on test):
+#   1. Fixed 0.5 threshold        -- naive; natural operating point (NOT recall-matched)
+#   2. Global fixed-flag (top 10%)-- flag highest-scoring 10% (NOT recall-matched)
+#   3. Pooled FAIL-quantile        -- one threshold, conformal FNR control on pooled
+#                                     FAIL scores (recall-matched ~90%, unstratified)
+#   4. Mondrian CRC (ours)         -- per-domain FNR control (recall-matched ~90%)
+#
+# The 3-vs-4 contrast is the finding: same recall target, but Mondrian holds it in
+# EVERY domain while the pooled threshold drifts.
 ################################################################################
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
 import warnings
 
 warnings.filterwarnings('ignore')
 
 print("\n" + "="*80)
-print("BLOCK 5: BASELINE COMPARISONS & ABLATION STUDIES")
+print("BLOCK 5: BASELINE COMPARISON (matched-recall)")
 print("="*80 + "\n")
 
 # ============================================================================
-# STEP 1: LOAD DATA
+# STEP 1: LOAD
 # ============================================================================
 
-print("[STEP 1/6] Loading calibration and test data...\n")
+print("[STEP 1/4] Loading calibration and test predictions...\n")
 
 calib = pd.read_csv("data/processed/calib_predictions.csv")
-test = pd.read_csv("data/processed/test_crc_results.csv")
+test = pd.read_csv("data/processed/test_crc_results.csv")  # carries 'score' from Block 4
 
-print(f"✓ Calibration: {len(calib):,} samples")
-print(f"✓ Test: {len(test):,} samples\n")
+for name, d in [("calib", calib), ("test", test)]:
+    if 'score' not in d.columns:
+        raise KeyError(f"'score' column missing in {name}. Re-run Blocks 2 and 4.")
+
+print(f"✓ Calibration: {len(calib):,}    Test: {len(test):,}\n")
+
+alpha = 0.10
+domains = sorted(test['source_ds'].unique())
+
+def conformal_fnr_threshold(fail_scores, a):
+    m = len(fail_scores)
+    if m == 0:
+        return -np.inf
+    k = int(np.floor(a * (m + 1)))
+    return -np.inf if k < 1 else np.sort(fail_scores)[k - 1]
 
 # ============================================================================
-# STEP 2: BASELINE 1 - NO CRC (STANDARD 0.5 THRESHOLD)
+# STEP 2: DEFINE THE FOUR FLAGGING RULES (thresholds fit on CALIB)
 # ============================================================================
 
-print("[STEP 2/6] Baseline 1: Standard 0.5 threshold (no CRC)...\n")
+print("[STEP 2/4] Fitting thresholds on calibration...\n")
 
-# On test set: simply predict FAIL if P(FAIL) > 0.5
-test['baseline1_flagged'] = test['pred_prob_fail'] > 0.5
+# 1. Fixed 0.5
+def flag_half(scores, dom):           # noqa
+    return scores > 0.5
 
-baseline1_results = []
-for domain in sorted(test['source_ds'].unique()):
-    domain_test = test[test['source_ds'] == domain]
-    
-    tp = ((domain_test['label'] == 'FAIL') & (domain_test['baseline1_flagged'])).sum()
-    fp = ((domain_test['label'] == 'PASS') & (domain_test['baseline1_flagged'])).sum()
-    fn = ((domain_test['label'] == 'FAIL') & (~domain_test['baseline1_flagged'])).sum()
-    tn = ((domain_test['label'] == 'PASS') & (~domain_test['baseline1_flagged'])).sum()
-    
-    n_fail = (domain_test['label'] == 'FAIL').sum()
-    n_pass = (domain_test['label'] == 'PASS').sum()
-    
-    coverage = tp / n_fail if n_fail > 0 else 0
-    false_alarm = fp / n_pass if n_pass > 0 else 0
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    
-    baseline1_results.append({
-        'method': 'Baseline: 0.5 Threshold',
-        'domain': domain,
-        'coverage': coverage,
-        'false_alarm_rate': false_alarm,
-        'precision': precision,
-        'tp': tp, 'fp': fp, 'fn': fn, 'tn': tn
+# 2. Global fixed-flag: top 10% of all calib scores
+thr_fixedflag = np.quantile(calib['score'], 0.90)
+def flag_fixedflag(scores, dom):      # noqa
+    return scores >= thr_fixedflag
+
+# 3. Pooled FAIL-quantile (global FNR control, unstratified)
+thr_pooled = conformal_fnr_threshold(calib.loc[calib['label'] == 'FAIL', 'score'].values, alpha)
+def flag_pooled(scores, dom):         # noqa
+    return scores >= thr_pooled
+
+# 4. Mondrian: per-domain thresholds from Block 3
+mondrian_thr = dict(pd.read_csv("data/processed/crc_thresholds.csv").values)
+def flag_mondrian(scores, dom):       # noqa
+    return scores >= mondrian_thr[dom]
+
+methods = {
+    "Fixed 0.5 threshold":      (flag_half,      False),
+    "Global fixed-flag (10%)":  (flag_fixedflag, False),
+    "Pooled FAIL-quantile":     (flag_pooled,    True),
+    "Mondrian CRC (ours)":      (flag_mondrian,  True),
+}
+
+print(f"  Fixed-flag threshold (90th pct of all scores): {thr_fixedflag:.3f}")
+print(f"  Pooled FAIL-quantile threshold (alpha={alpha}):  {thr_pooled:.3f}")
+print(f"  Mondrian thresholds: " +
+      ", ".join(f"{d}={mondrian_thr[d]:.2f}" for d in domains) + "\n")
+
+# ============================================================================
+# STEP 3: EVALUATE EACH METHOD ON TEST (per domain + pooled)
+# ============================================================================
+
+print("[STEP 3/4] Evaluating on test set...\n")
+
+per_domain_rows = []
+summary_rows = []
+
+for mname, (rule, recall_matched) in methods.items():
+    # per-domain
+    recalls = []
+    for dom in domains:
+        d = test[test['source_ds'] == dom]
+        flagged = rule(d['score'].values, dom)
+        is_fail = (d['label'] == 'FAIL').values
+        is_pass = ~is_fail
+        tp = (flagged & is_fail).sum(); fp = (flagged & is_pass).sum()
+        fn = (~flagged & is_fail).sum(); tn = (~flagged & is_pass).sum()
+        recall = tp / (tp + fn) if (tp + fn) else np.nan
+        far = fp / (fp + tn) if (fp + tn) else np.nan
+        prec = tp / (tp + fp) if (tp + fp) else np.nan
+        recalls.append(recall)
+        per_domain_rows.append({'method': mname, 'domain': dom,
+                                'recall': recall, 'far': far, 'precision': prec})
+    # pooled
+    flagged = rule(test['score'].values, None) if mname == "Fixed 0.5 threshold" \
+        else np.concatenate([rule(test.loc[test.source_ds == dom, 'score'].values, dom)
+                             for dom in domains])
+    # simpler pooled recompute to avoid ordering issues:
+    flag_all = np.zeros(len(test), dtype=bool)
+    for dom in domains:
+        m = (test['source_ds'] == dom).values
+        flag_all[m] = rule(test.loc[m, 'score'].values, dom)
+    is_fail = (test['label'] == 'FAIL').values
+    tp = (flag_all & is_fail).sum(); fp = (flag_all & ~is_fail).sum()
+    fn = (~flag_all & is_fail).sum(); tn = (~flag_all & ~is_fail).sum()
+    pooled_recall = tp / (tp + fn)
+    pooled_far = fp / (fp + tn)
+    pooled_prec = tp / (tp + fp) if (tp + fp) else np.nan
+    recall_std = np.nanstd(recalls)  # uniformity: lower = more uniform across domains
+
+    summary_rows.append({
+        'method': mname, 'recall_matched': recall_matched,
+        'pooled_recall': pooled_recall, 'recall_std_across_domains': recall_std,
+        'pooled_far': pooled_far, 'pooled_precision': pooled_prec
     })
 
-baseline1_df = pd.DataFrame(baseline1_results)
-print("Baseline 1 Results (Standard 0.5 Threshold):")
-print(baseline1_df.groupby('method')[['coverage', 'false_alarm_rate', 'precision']].mean())
+per_domain_df = pd.DataFrame(per_domain_rows)
+summary_df = pd.DataFrame(summary_rows)
+
+pd.set_option('display.width', 120)
+print("Summary (pooled over test set):\n")
+print(summary_df.to_string(index=False,
+      formatters={
+          'pooled_recall': lambda x: f"{x*100:5.1f}%",
+          'recall_std_across_domains': lambda x: f"{x*100:5.1f}pp",
+          'pooled_far': lambda x: f"{x*100:5.1f}%",
+          'pooled_precision': lambda x: f"{x*100:5.1f}%",
+      }))
 print()
 
-# ============================================================================
-# STEP 3: BASELINE 2 - GLOBAL THRESHOLD (SINGLE τ FOR ALL DOMAINS)
-# ============================================================================
-
-print("[STEP 3/6] Baseline 2: Global CRC threshold (single τ for all domains)...\n")
-
-# Fit global threshold on calibration set
-# Global τ: quantile of all conformity scores (no stratification)
-alpha = 0.1
-n_calib = len(calib)
-quantile_level = np.ceil((n_calib + 1) * (1 - alpha)) / n_calib
-quantile_level = min(quantile_level, 1.0)
-
-global_threshold = np.quantile(calib['conformity_score'], quantile_level)
-
-print(f"Global CRC threshold (τ): {global_threshold:.3f}\n")
-
-test['baseline2_flagged'] = test['conformity_score'] >= global_threshold
-
-baseline2_results = []
-for domain in sorted(test['source_ds'].unique()):
-    domain_test = test[test['source_ds'] == domain]
-    
-    tp = ((domain_test['label'] == 'FAIL') & (domain_test['baseline2_flagged'])).sum()
-    fp = ((domain_test['label'] == 'PASS') & (domain_test['baseline2_flagged'])).sum()
-    fn = ((domain_test['label'] == 'FAIL') & (~domain_test['baseline2_flagged'])).sum()
-    tn = ((domain_test['label'] == 'PASS') & (~domain_test['baseline2_flagged'])).sum()
-    
-    n_fail = (domain_test['label'] == 'FAIL').sum()
-    n_pass = (domain_test['label'] == 'PASS').sum()
-    
-    coverage = tp / n_fail if n_fail > 0 else 0
-    false_alarm = fp / n_pass if n_pass > 0 else 0
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    
-    baseline2_results.append({
-        'method': 'Baseline: Global τ',
-        'domain': domain,
-        'coverage': coverage,
-        'false_alarm_rate': false_alarm,
-        'precision': precision,
-        'tp': tp, 'fp': fp, 'fn': fn, 'tn': tn
-    })
-
-baseline2_df = pd.DataFrame(baseline2_results)
-print("Baseline 2 Results (Global Threshold):")
-print(baseline2_df.groupby('method')[['coverage', 'false_alarm_rate', 'precision']].mean())
-print()
+print("Per-domain recall (the uniformity story):\n")
+pivot = per_domain_df.pivot(index='domain', columns='method', values='recall') * 100
+print(pivot.round(1).to_string())
+print("\n  -> Compare 'Pooled FAIL-quantile' vs 'Mondrian CRC': same ~90% pooled target,")
+print("     but Mondrian holds it per domain while the pooled threshold drifts.\n")
 
 # ============================================================================
-# STEP 4: BASELINE 3 - FULLY-CONDITIONAL CRC
+# STEP 4: VISUALIZE
 # ============================================================================
 
-print("[STEP 4/6] Baseline 3: Fully-conditional CRC (one threshold per sample)...\n")
-
-# For fully-conditional: use LOO (Leave-One-Out) calibration
-# Approximate by using individual conformity scores as thresholds
-# A sample is flagged if its conformity score >= median of other samples in same label class
-
-# Simplified: flag if conformity_score >= high quantile (e.g., 90th percentile)
-fc_threshold = np.quantile(calib[calib['label'] == 'FAIL']['conformity_score'], 0.9)
-
-test['baseline3_flagged'] = test['conformity_score'] >= fc_threshold
-
-baseline3_results = []
-for domain in sorted(test['source_ds'].unique()):
-    domain_test = test[test['source_ds'] == domain]
-    
-    tp = ((domain_test['label'] == 'FAIL') & (domain_test['baseline3_flagged'])).sum()
-    fp = ((domain_test['label'] == 'PASS') & (domain_test['baseline3_flagged'])).sum()
-    fn = ((domain_test['label'] == 'FAIL') & (~domain_test['baseline3_flagged'])).sum()
-    tn = ((domain_test['label'] == 'PASS') & (~domain_test['baseline3_flagged'])).sum()
-    
-    n_fail = (domain_test['label'] == 'FAIL').sum()
-    n_pass = (domain_test['label'] == 'PASS').sum()
-    
-    coverage = tp / n_fail if n_fail > 0 else 0
-    false_alarm = fp / n_pass if n_pass > 0 else 0
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    
-    baseline3_results.append({
-        'method': 'Baseline: Fully-Conditional CRC',
-        'domain': domain,
-        'coverage': coverage,
-        'false_alarm_rate': false_alarm,
-        'precision': precision,
-        'tp': tp, 'fp': fp, 'fn': fn, 'tn': tn
-    })
-
-baseline3_df = pd.DataFrame(baseline3_results)
-print("Baseline 3 Results (Fully-Conditional CRC):")
-print(baseline3_df.groupby('method')[['coverage', 'false_alarm_rate', 'precision']].mean())
-print()
-
-# ============================================================================
-# STEP 5: OUR METHOD - MONDRIAN CRC (ALREADY COMPUTED)
-# ============================================================================
-
-print("[STEP 5/6] Our Method: Mondrian CRC (from Block 3)...\n")
-
-# Load our CRC results
-crc_thresholds_df = pd.read_csv("data/processed/crc_thresholds.csv")
-crc_thresholds = dict(zip(crc_thresholds_df['domain'], crc_thresholds_df['crc_threshold']))
-
-test['mondrian_threshold'] = test['source_ds'].map(crc_thresholds)
-test['mondrian_flagged'] = test['conformity_score'] >= test['mondrian_threshold']
-
-mondrian_results = []
-for domain in sorted(test['source_ds'].unique()):
-    domain_test = test[test['source_ds'] == domain]
-    
-    tp = ((domain_test['label'] == 'FAIL') & (domain_test['mondrian_flagged'])).sum()
-    fp = ((domain_test['label'] == 'PASS') & (domain_test['mondrian_flagged'])).sum()
-    fn = ((domain_test['label'] == 'FAIL') & (~domain_test['mondrian_flagged'])).sum()
-    tn = ((domain_test['label'] == 'PASS') & (~domain_test['mondrian_flagged'])).sum()
-    
-    n_fail = (domain_test['label'] == 'FAIL').sum()
-    n_pass = (domain_test['label'] == 'PASS').sum()
-    
-    coverage = tp / n_fail if n_fail > 0 else 0
-    false_alarm = fp / n_pass if n_pass > 0 else 0
-    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    
-    mondrian_results.append({
-        'method': 'Mondrian CRC (Ours)',
-        'domain': domain,
-        'coverage': coverage,
-        'false_alarm_rate': false_alarm,
-        'precision': precision,
-        'tp': tp, 'fp': fp, 'fn': fn, 'tn': tn
-    })
-
-mondrian_df = pd.DataFrame(mondrian_results)
-print("Our Method Results (Mondrian CRC):")
-print(mondrian_df.groupby('method')[['coverage', 'false_alarm_rate', 'precision']].mean())
-print()
-
-# ============================================================================
-# STEP 6: COMBINE AND COMPARE ALL METHODS
-# ============================================================================
-
-print("[STEP 6/6] Comparing all methods...\n")
-
-all_results = pd.concat([baseline1_df, baseline2_df, baseline3_df, mondrian_df], ignore_index=True)
-
-# Overall metrics by method
-comparison_summary = all_results.groupby('method').agg({
-    'coverage': 'mean',
-    'false_alarm_rate': 'mean',
-    'precision': 'mean'
-}).round(3)
-
-print("="*80)
-print("OVERALL COMPARISON (Average Across All Domains)")
-print("="*80)
-print(comparison_summary)
-print()
-
-# Save comparison results
-all_results.to_csv("data/processed/baseline_comparison_results.csv", index=False)
-print("✓ Saved comparison results to data/processed/baseline_comparison_results.csv\n")
-
-# ============================================================================
-# CREATE COMPARISON VISUALIZATIONS
-# ============================================================================
-
-print("Creating comparison visualizations...\n")
+print("[STEP 4/4] Creating comparison figure...\n")
 
 fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+order = list(methods.keys())
+cols = ['#95a5a6', '#95a5a6', '#3498db', '#2ecc71']  # grey = context, colour = CRC
 
-# Plot 1: Coverage Comparison
+# Pooled recall (note which are matched)
 ax = axes[0, 0]
-coverage_by_method = all_results.groupby('method')['coverage'].mean().sort_values()
-colors = ['#e74c3c', '#e74c3c', '#e74c3c', '#2ecc71']  # Green for ours
-ax.barh(coverage_by_method.index, coverage_by_method.values * 100, color=colors, alpha=0.8)
-ax.axvline(9, color='black', linestyle='--', linewidth=2, label='Target (9%)')
-ax.set_xlabel('Coverage (%)', fontweight='bold')
-ax.set_title('Hallucination Detection Coverage\n(Average Across Domains)', fontweight='bold')
-ax.legend()
-ax.grid(axis='x', alpha=0.3)
+vals = [summary_df.set_index('method').loc[m, 'pooled_recall']*100 for m in order]
+ax.barh(order, vals, color=cols, alpha=0.85)
+ax.axvline(90, color='black', ls='--', lw=2, label='90% target')
+ax.set_xlabel('Pooled recall (%)', fontweight='bold')
+ax.set_title('Recall (pooled) — only blue/green are recall-matched', fontweight='bold', fontsize=11)
+ax.set_xlim(0, 105); ax.legend(fontsize=9); ax.grid(axis='x', alpha=0.3)
 
-# Plot 2: False Alarm Rate Comparison
+# Recall uniformity across domains (THE key plot)
 ax = axes[0, 1]
-false_alarm_by_method = all_results.groupby('method')['false_alarm_rate'].mean().sort_values()
-colors = ['#3498db', '#3498db', '#3498db', '#9b59b6']  # Purple for ours
-ax.barh(false_alarm_by_method.index, false_alarm_by_method.values * 100, color=colors, alpha=0.8)
-ax.set_xlabel('False Alarm Rate (%)', fontweight='bold')
-ax.set_title('False Alarm Rate\n(Average Across Domains)', fontweight='bold')
+vals = [summary_df.set_index('method').loc[m, 'recall_std_across_domains']*100 for m in order]
+ax.barh(order, vals, color=cols, alpha=0.85)
+ax.set_xlabel('Std of per-domain recall (pp) — lower = more uniform', fontweight='bold')
+ax.set_title('Per-Domain Recall Uniformity', fontweight='bold', fontsize=11)
 ax.grid(axis='x', alpha=0.3)
 
-# Plot 3: Precision Comparison
+# Pooled FAR
 ax = axes[1, 0]
-precision_by_method = all_results.groupby('method')['precision'].mean().sort_values()
-colors = ['#f39c12', '#f39c12', '#f39c12', '#27ae60']  # Green for ours
-ax.barh(precision_by_method.index, precision_by_method.values * 100, color=colors, alpha=0.8)
-ax.set_xlabel('Precision (%)', fontweight='bold')
-ax.set_title('Precision\n(Average Across Domains)', fontweight='bold')
-ax.set_xlim(0, 100)
+vals = [summary_df.set_index('method').loc[m, 'pooled_far']*100 for m in order]
+ax.barh(order, vals, color=cols, alpha=0.85)
+ax.set_xlabel('Pooled FAR (%)', fontweight='bold')
+ax.set_title('False-Alarm Rate (pooled)', fontweight='bold', fontsize=11)
 ax.grid(axis='x', alpha=0.3)
 
-# Plot 4: Coverage-False Alarm Trade-off
+# Per-domain recall: pooled vs Mondrian (the drift picture)
 ax = axes[1, 1]
-for method in all_results['method'].unique():
-    method_data = all_results[all_results['method'] == method]
-    avg_coverage = method_data['coverage'].mean() * 100
-    avg_false_alarm = method_data['false_alarm_rate'].mean() * 100
-    
-    if 'Ours' in method:
-        ax.scatter(avg_false_alarm, avg_coverage, s=500, marker='*', 
-                  label=method, color='#2ecc71', edgecolors='black', linewidth=2, zorder=5)
-    else:
-        ax.scatter(avg_false_alarm, avg_coverage, s=300, 
-                  label=method, alpha=0.7)
-    
-    ax.annotate(method.replace('Baseline: ', '').replace('(Ours)', ''),
-               (avg_false_alarm, avg_coverage),
-               fontsize=9, ha='center', fontweight='bold')
+dd = pivot[['Pooled FAIL-quantile', 'Mondrian CRC (ours)']]
+y = np.arange(len(dd)); h = 0.38
+ax.barh(y - h/2, dd['Pooled FAIL-quantile'], height=h, color='#3498db', alpha=0.85, label='Pooled FAIL-quantile')
+ax.barh(y + h/2, dd['Mondrian CRC (ours)'], height=h, color='#2ecc71', alpha=0.85, label='Mondrian (ours)')
+ax.axvline(90, color='black', ls='--', lw=2, label='90% target')
+ax.set_yticks(y); ax.set_yticklabels(dd.index)
+ax.set_xlabel('Recall (%)', fontweight='bold')
+ax.set_title('Per-Domain Recall: Global vs Mondrian', fontweight='bold', fontsize=11)
+ax.set_xlim(0, 105); ax.legend(fontsize=8); ax.grid(axis='x', alpha=0.3)
 
-ax.axhline(9, color='red', linestyle='--', linewidth=1.5, alpha=0.5, label='Coverage Target')
-ax.set_xlabel('False Alarm Rate (%)', fontweight='bold')
-ax.set_ylabel('Coverage (%)', fontweight='bold')
-ax.set_title('Coverage-False Alarm Trade-off', fontweight='bold')
-ax.grid(alpha=0.3)
-ax.legend(fontsize=9, loc='best')
-
-plt.tight_layout()
+plt.suptitle('Block 5: Matched-Recall Method Comparison (detector AUC ~ 0.5)',
+             fontsize=13, fontweight='bold', y=0.99)
+plt.tight_layout(rect=[0, 0, 1, 0.97])
 Path("python/outputs").mkdir(parents=True, exist_ok=True)
 plt.savefig("python/outputs/05_baseline_comparison.png", dpi=300, bbox_inches='tight')
-print("✓ Saved comparison visualization to python/outputs/05_baseline_comparison.png\n")
+print("✓ Saved figure to python/outputs/05_baseline_comparison.png")
+
+per_domain_df.to_csv("data/processed/baseline_per_domain.csv", index=False)
+summary_df.to_csv("data/processed/baseline_summary.csv", index=False)
+print("✓ Saved data/processed/baseline_per_domain.csv and baseline_summary.csv\n")
 
 # ============================================================================
-# SUMMARY TABLE
+# SUMMARY
 # ============================================================================
+
+mondrian_std = summary_df.set_index('method').loc['Mondrian CRC (ours)', 'recall_std_across_domains']
+pooled_std = summary_df.set_index('method').loc['Pooled FAIL-quantile', 'recall_std_across_domains']
 
 print("="*80)
-print("BASELINE COMPARISON SUMMARY")
-print("="*80 + "\n")
+print("BLOCK 5 COMPLETE")
+print("="*80)
+print(f"""
+The honest comparison (detector AUC ~ 0.5, so no method 'detects better'):
 
-summary_table = all_results.groupby('method').agg({
-    'coverage': ['mean', 'std', 'min', 'max'],
-    'false_alarm_rate': ['mean', 'std', 'min', 'max'],
-    'precision': ['mean', 'std', 'min', 'max']
-}).round(3)
+  - Fixed 0.5 and fixed-flag(10%) are NOT recall-matched -- shown for context only.
+  - Pooled FAIL-quantile and Mondrian both target ~90% pooled recall.
+  - At matched recall the pooled FAR is similar across the two (no free lunch on a
+    near-random detector) -- so the difference is NOT aggregate detection.
+  - The difference is UNIFORMITY: per-domain recall std is
+        Mondrian {mondrian_std*100:.1f}pp   vs   Pooled {pooled_std*100:.1f}pp.
+    Mondrian holds ~90% in every domain; the single pooled threshold drifts
+    (worst on RAGTruth, whose score scale differs from the pool).
 
-print(summary_table)
-print()
+That is the correct, defensible value of Mondrian here: per-domain validity, not a
+better number. A guarantee that holds in every stratum, on top of a detector whose
+quality the guarantee cannot change.
 
-print("""
-KEY FINDINGS:
-
-1. Baseline 1 (0.5 Threshold):
-   - No domain adaptation; treats all domains equally
-   - Can be too aggressive or too conservative for specific domains
-   
-2. Baseline 2 (Global τ):
-   - Single threshold for all domains
-   - Ignores domain heterogeneity; unfair coverage across domains
-   
-3. Baseline 3 (Fully-Conditional):
-   - Per-sample threshold
-   - May be overly conservative; harder to deploy
-   
-4. Mondrian CRC (Ours):
-   - Domain-specific thresholds
-   - Balances domain fairness with coverage uniformity
-   - Better suited for practical deployment
-
-ADVANTAGE OF MONDRIAN CRC:
-✓ Domain-specific guarantees (fairness)
-✓ Interpretable thresholds per domain
-✓ Formal statistical guarantees
-✓ Robust to domain shift
+Files Saved:
+  ✓ python/outputs/05_baseline_comparison.png
+  ✓ data/processed/baseline_per_domain.csv
+  ✓ data/processed/baseline_summary.csv
 """)
-
 print("="*80 + "\n")
