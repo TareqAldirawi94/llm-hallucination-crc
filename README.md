@@ -27,6 +27,14 @@ part is what that valid guarantee reveals about the detector underneath it.
    pooled-to-conditional gap is the larger of the two: the semantic model leaks more domain
    identity while detecting no better.
 
+5. **The bottleneck is the detector, and that is robust.** Four detection strategies —
+   lexical (TF-IDF), semantic (BERT), relational (passage/answer interaction), and zero-shot
+   entailment (NLI cross-encoder) — all land at within-domain AUC ~0.5–0.56. The only
+   above-chance results are a lexical-overlap shortcut tied to how HaluEval was built, or
+   confined to surface-knowledge domains; entailment fails on exactly the retrieval-grounded
+   domains where it should be strongest. Detecting these hallucinations needs a task-specific
+   fine-tuned model, not an off-the-shelf detector.
+
 The honest conclusion: **Mondrian CRC is a valid, finite-sample, domain-conditional
 guarantee, and its cost (false alarms) is set entirely by the base detector — which is
 near random here for both feature sets. The conformal machinery works; the detector is the
@@ -78,6 +86,9 @@ python python/05_baseline_comparison.py  # matched-recall comparison (uniformity
 python python/06_ablation_studies.py     # alpha, calibration size, Mondrian vs global
 python python/07_bert_detector.py        # BERT (MiniLM) detector + per-domain AUC
 python python/08_bert_crc_comparison.py  # TF-IDF vs BERT under CRC
+python python/09_faithfulness_detector.py  # relational passage/answer features
+python python/09b_overlap_ablation.py      # isolates the lexical-overlap artifact
+python python/10_nli_detector.py           # zero-shot NLI entailment detector
 ```
 
 Scripts use relative paths; run from the project root (the folder containing `data/`).
@@ -100,6 +111,7 @@ classifier; the conformal guarantee is on the controlled risk, not on those metr
 - `python/01–06_*.py` — TF-IDF pipeline (load, train, fit CRC, evaluate, compare, ablate)
 - `python/03b_alpha_sweep.py` — alpha-sweep / per-domain AUC diagnostic
 - `python/07–08_*.py` — BERT detector and TF-IDF-vs-BERT comparison
+- `python/09–10_*.py` — detector investigation: relational features, overlap ablation, NLI
 - `figures/` — per-block visualizations
 - `requirements.txt` — dependencies
 
